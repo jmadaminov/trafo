@@ -17,6 +17,9 @@ Rules:
     is ignored (gaze spill while reading must not raise the window behind).
 - Own windows (the Trafo UI itself) block hits but are never focus targets.
 - After a focus switch, `cooldown_s` must pass before the next one.
+- Mouse wins over gaze: any cursor movement within the last `mouse_pause_s`
+  suspends gaze focusing entirely (the user is actively pointing; stealing
+  focus out from under the cursor is never what they want).
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ class EngineConfig:
     cooldown_s: float = 1.0
     list_refresh_s: float = 0.25  # how often the window list is re-fetched
     edge_margin_px: float = 75.0  # spatial hysteresis scale (~typical gaze error)
+    mouse_pause_s: float = 5.0  # gaze focusing is suspended this long after mouse use
 
 
 class FocusEngine:
@@ -47,14 +51,25 @@ class FocusEngine:
         self._pending_since = 0.0
         self._mismatch_since: float | None = None
         self._cooldown_until = -math.inf
+        self._last_mouse_t = -math.inf
 
     @property
     def pending(self) -> WindowInfo | None:
         """The window currently accumulating dwell, if any."""
         return self._pending
 
+    def note_mouse_activity(self, t: float) -> None:
+        """Record that the user moved the mouse at time `t` (same clock as update)."""
+        self._last_mouse_t = t
+
     def update(self, x: float, y: float, t: float) -> WindowInfo | None:
         """Feed one gaze point; returns the window if this tick switched focus."""
+        if t - self._last_mouse_t < self.cfg.mouse_pause_s:
+            # The mouse is (recently) in use — it outranks gaze. Drop any
+            # accumulating dwell so a stale one can't fire when the pause ends.
+            self._pending = None
+            self._mismatch_since = None
+            return None
         if t < self._cooldown_until:
             return None
         if t - self._last_refresh >= self.cfg.list_refresh_s:

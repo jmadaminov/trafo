@@ -141,3 +141,43 @@ def test_own_window_blocks_hits_but_is_never_focused():
     focused = run_gaze(engine, 200, 200, 0.0, 2.0)  # inside our own window
     assert focused == []
     assert wm.focus_calls == []
+
+
+# -- mouse outranks gaze -------------------------------------------------------
+
+
+def test_recent_mouse_activity_suspends_gaze_focus():
+    engine, wm = make_engine()
+    engine.note_mouse_activity(0.0)
+    focused = run_gaze(engine, 700, 100, 0.0, 4.0)  # stare at B for 4s < pause 5s
+    assert focused == []
+    assert wm.focus_calls == []
+
+
+def test_gaze_focus_resumes_after_mouse_pause():
+    engine, wm = make_engine()
+    engine.note_mouse_activity(0.0)
+    focused = run_gaze(engine, 700, 100, 0.0, 6.0)  # pause ends at 5.0, dwell 0.5
+    assert [w.id for w in focused] == [B.id]
+    assert wm.focus_calls == [B.id]
+
+
+def test_mouse_activity_drops_accumulated_dwell():
+    engine, wm = make_engine()
+    cfg = engine.cfg
+    cfg.mouse_pause_s = 1.0
+    run_gaze(engine, 700, 100, 0.0, 0.4)  # dwell on B almost complete
+    engine.note_mouse_activity(0.4)
+    # Pause [0.4, 1.4); dwell must restart, so nothing fires before ~1.9.
+    focused = run_gaze(engine, 700, 100, 0.4, 1.85)
+    assert focused == []
+    focused = run_gaze(engine, 700, 100, 1.85, 2.2)
+    assert [w.id for w in focused] == [B.id]
+
+
+def test_zero_mouse_pause_disables_suspension():
+    engine, wm = make_engine()
+    engine.cfg.mouse_pause_s = 0.0
+    engine.note_mouse_activity(0.0)
+    focused = run_gaze(engine, 700, 100, 0.0, 1.0)
+    assert [w.id for w in focused] == [B.id]

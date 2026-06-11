@@ -13,7 +13,7 @@ from collections import deque
 
 import numpy as np
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QCursor, QGuiApplication
 
 from ..config import Settings
 from ..engine import EngineConfig, FocusEngine
@@ -54,6 +54,8 @@ class TrafoController(QObject):
         self._engine: FocusEngine | None = None
         self._overlay_on = False
         self._last_face_t = 0.0
+        self._last_cursor = None
+        self._last_mouse_move_t = -1e9
 
         self._history: deque[GazeHistoryEntry] = deque(maxlen=20)
         self._bias = np.zeros(2)
@@ -176,7 +178,11 @@ class TrafoController(QObject):
             self.notice.emit("Missing permission: " + "; ".join(missing))
             if hasattr(wm, "request_permissions"):
                 wm.request_permissions()
-        self._engine = FocusEngine(wm, EngineConfig(dwell_s=self.settings.dwell_ms / 1000))
+        self._engine = FocusEngine(wm, EngineConfig(
+            dwell_s=self.settings.dwell_ms / 1000,
+            mouse_pause_s=float(self.settings.mouse_pause_s),
+        ))
+        self._engine.note_mouse_activity(self._last_mouse_move_t)
         self.engine_changed.emit(True)
 
     def set_click_learning(self, on: bool) -> None:
@@ -203,6 +209,12 @@ class TrafoController(QObject):
         self.settings.save()
         if self._engine is not None:
             self._engine.cfg.dwell_s = value / 1000
+
+    def set_mouse_pause_s(self, value: int) -> None:
+        self.settings.mouse_pause_s = value
+        self.settings.save()
+        if self._engine is not None:
+            self._engine.cfg.mouse_pause_s = float(value)
 
     def recenter(self, target_xy: tuple[float, float]) -> bool:
         """Cancel residual bias using a known gaze target (the user is looking there)."""
@@ -234,6 +246,18 @@ class TrafoController(QObject):
         if self._overlay_on:
             self.overlay.set_gaze(point)
         self.gaze_point.emit(point)
+
+        # Mouse outranks gaze: poll the cursor at sample rate and tell the
+        # engine when it moved, so it holds off focusing for mouse_pause_s.
+        cur = QCursor.pos()
+        if self._last_cursor is not None and (
+            abs(cur.x() - self._last_cursor.x()) + abs(cur.y() - self._last_cursor.y()) > 2
+        ):
+            self._last_mouse_move_t = s.timestamp
+            if self._engine is not None:
+                self._engine.note_mouse_activity(s.timestamp)
+        self._last_cursor = cur
+
         if self._engine is not None:
             focused = self._engine.update(point[0], point[1], s.timestamp)
             if focused is not None:

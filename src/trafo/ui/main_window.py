@@ -148,6 +148,24 @@ class MainWindow(QWidget):
         self.dwell_spin.valueChanged.connect(self.c.set_dwell_ms)
         dwell_row.addWidget(self.dwell_spin)
         beh_card.add_layout(dwell_row)
+
+        mouse_row = QHBoxLayout()
+        mouse_label = QLabel("Mouse pause")
+        mouse_hint = QLabel("pause after mouse use")
+        mouse_hint.setObjectName("Caption")
+        mouse_row.addWidget(mouse_label)
+        mouse_row.addWidget(mouse_hint, 1)
+        self.mouse_pause_spin = QSpinBox()
+        self.mouse_pause_spin.setRange(0, 30)
+        self.mouse_pause_spin.setSuffix(" s")
+        self.mouse_pause_spin.setToolTip(
+            "After you move the mouse, gaze won't switch focus for this "
+            "long — the mouse outranks your eyes. 0 disables the pause."
+        )
+        self.mouse_pause_spin.setValue(self.c.settings.mouse_pause_s)
+        self.mouse_pause_spin.valueChanged.connect(self.c.set_mouse_pause_s)
+        mouse_row.addWidget(self.mouse_pause_spin)
+        beh_card.add_layout(mouse_row)
         root.addWidget(beh_card)
 
         # -- Footer --

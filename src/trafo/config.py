@@ -19,6 +19,7 @@ def ensure_config_dir() -> Path:
 @dataclass
 class Settings:
     dwell_ms: int = 500
+    mouse_pause_s: int = 5  # gaze focusing pauses this long after mouse movement
     learn_from_clicks: bool = True
     onboarded: bool = False
 
