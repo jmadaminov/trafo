@@ -49,6 +49,7 @@ class TrafoController(QObject):
         self.mapper = ScreenLockedMapper.load()
         self.overlay = GazeOverlay()
 
+        self._camera_index = camera_index
         self._calibrating = False
         self._engine: FocusEngine | None = None
         self._overlay_on = False
@@ -60,16 +61,40 @@ class TrafoController(QObject):
         self._click_gate = ClickSampleGate()
         self._click_listener: ClickListener | None = None
 
-        self.worker = GazeWorker(camera_index, parent=self)
-        self.worker.sample.connect(self._on_sample, Qt.ConnectionType.QueuedConnection)
-        self.worker.error.connect(self._on_error, Qt.ConnectionType.QueuedConnection)
+        self.worker = self._new_worker()
         self._click.connect(self._handle_click, Qt.ConnectionType.QueuedConnection)
+
+    def _new_worker(self) -> GazeWorker:
+        worker = GazeWorker(self._camera_index, parent=self)
+        worker.sample.connect(self._on_sample, Qt.ConnectionType.QueuedConnection)
+        worker.error.connect(self._on_error, Qt.ConnectionType.QueuedConnection)
+        return worker
 
     def start(self) -> None:
         self.tracking_changed.emit("starting")
         self.worker.start()
         if self.settings.learn_from_clicks and self.mapper is not None:
             self.set_click_learning(True)
+
+    def restart_worker(self) -> None:
+        """Recreate and restart the camera worker.
+
+        Recovers from a camera-open failure: on first launch the worker can
+        fail before the user grants camera permission, and a failed worker
+        thread does not retry on its own. Granting access (or freeing the
+        camera) and calling this brings tracking back without an app restart.
+        """
+        debug = self.worker._debug
+        try:
+            self.worker.sample.disconnect()
+            self.worker.error.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        self.worker.stop()
+        self.worker.deleteLater()
+        self.worker = self._new_worker()
+        self.worker.set_debug(debug)
+        self.start()
 
     # -- queries -------------------------------------------------------------
 

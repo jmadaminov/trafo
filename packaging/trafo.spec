@@ -2,7 +2,15 @@
 # Build:  uv run pyinstaller packaging/trafo.spec --noconfirm
 # Output: dist/Trafo.app
 
+import os
+
 from PyInstaller.utils.hooks import collect_all
+
+# A stable signing identity makes macOS permission grants survive rebuilds
+# (ad-hoc signatures change every build, so TCC treats each build as a new
+# app). Create a self-signed "Code Signing" certificate in Keychain Access,
+# then build with TRAFO_CODESIGN_IDENTITY=<cert name>.
+SIGN_ID = os.environ.get("TRAFO_CODESIGN_IDENTITY")
 
 datas, binaries, hiddenimports = [], [], []
 
@@ -24,7 +32,10 @@ a = Analysis(
     hiddenimports=hiddenimports + ["trafo"],
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib"],
+    # matplotlib must NOT be excluded: mediapipe.tasks.python.vision imports
+    # it at module level, so stripping it breaks the gaze pipeline in the
+    # frozen app ("No module named 'matplotlib'").
+    excludes=["tkinter"],
     cipher=block_cipher,
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
@@ -36,6 +47,7 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
+    codesign_identity=SIGN_ID,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="Trafo")
 

@@ -11,7 +11,8 @@ from .controller import TrafoController
 
 class Tray(QSystemTrayIcon):
     def __init__(self, controller: TrafoController, show_window):
-        super().__init__(theme.make_icon())
+        # Template (mask) glyph: macOS recolors it for light/dark menu bars.
+        super().__init__(theme.make_tray_icon())
         self.c = controller
         self._show_window = show_window
         self.setToolTip("Trafo")
