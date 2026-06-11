@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+.DS_Store
+packaging/icon_1024.png
+packaging/trafo.icns
+.claude/
