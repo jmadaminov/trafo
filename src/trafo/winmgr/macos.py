@@ -12,6 +12,7 @@ logical coordinates, so no conversion is needed.
 from __future__ import annotations
 
 import os
+import time
 
 import ApplicationServices as AS
 import Quartz
@@ -77,10 +78,23 @@ class MacWindowManager(WindowManager):
         if app is None:
             return super().focused_window()
         pid = app.processIdentifier()
-        for w in self.list_windows():
-            if w.pid == pid:
-                return w
-        return None
+        ours = [w for w in self.list_windows() if w.pid == pid]
+        if not ours:
+            return None
+        if len(ours) == 1:
+            return ours[0]
+        # Multi-window app: the first CG window of the pid is not necessarily
+        # the focused one — ask AX which window actually has focus and match
+        # it back to the CG list by rect.
+        ax_focused = _ax_attr(
+            AS.AXUIElementCreateApplication(pid), AS.kAXFocusedWindowAttribute
+        )
+        rect = _ax_rect(ax_focused) if ax_focused is not None else None
+        if rect is None:
+            return ours[0]
+        return min(
+            ours, key=lambda w: sum(abs(a - b) for a, b in zip(rect, w.rect))
+        )
 
     def focus(self, window: WindowInfo) -> bool:
         # The AX API has no direct CGWindowID lookup (that mapping is private
@@ -103,12 +117,18 @@ class MacWindowManager(WindowManager):
             return False
 
         app = NSRunningApplication.runningApplicationWithProcessIdentifier_(window.pid)
-        if app is not None:
+        if app is not None and not app.isActive():
+            # Real activation is asynchronous and ends by bringing the app's
+            # previous key window forward — which overrides the raise above
+            # for multi-window apps. Wait for the activation to finish, then
+            # re-assert the target so it has the last word.
             app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
-            # AX calls and activation race (separate async channels into the
-            # app); re-assert so the target wins even if activation restored
-            # the app's previous main window.
+            deadline = time.time() + 0.3
+            while not app.isActive() and time.time() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.03)  # let the window-server reorder settle
             AS.AXUIElementSetAttributeValue(best, AS.kAXMainAttribute, True)
+            AS.AXUIElementSetAttributeValue(app_ref, AS.kAXFocusedWindowAttribute, best)
             AS.AXUIElementPerformAction(best, AS.kAXRaiseAction)
         return True
 
