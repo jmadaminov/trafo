@@ -1,10 +1,12 @@
-"""Fullscreen, instruction-led calibration flow.
+"""Fullscreen, instruction-led smooth-pursuit calibration flow.
 
-Sequence: instruction screen -> 9 animated points -> (next display ->
-instructions -> 9 points) ... -> fit + save -> summary screen.
+Sequence per display: instruction screen -> settle (dot appears, ring
+shrinks while the eye acquires it) -> pursue (the dot sweeps the screen for
+~35 s while features are recorded continuously) -> next display ... ->
+lag-compensated pairing + fit + save -> summary screen.
 
 Every connected display is visited; targets are recorded in global
-virtual-desktop coordinates so one regression covers all monitors.
+virtual-desktop coordinates so one model covers all monitors.
 """
 
 from __future__ import annotations
@@ -18,15 +20,11 @@ from PySide6.QtWidgets import QWidget
 
 from ..gaze.calibration import ScreenLockedMapper
 from ..gaze.estimator import GazeSample
+from ..gaze.pursuit import PURSUIT_DURATION_S, pair_with_lag, pursuit_path
 
-# 3x3 outer grid plus 4 quarter points: 13 targets per display. The quarter
-# points pin down the interior where the quadratic terms would otherwise bend.
-GRID = [(gx, gy) for gy in (0.08, 0.5, 0.92) for gx in (0.08, 0.5, 0.92)] + [
-    (0.29, 0.29), (0.71, 0.29), (0.29, 0.71), (0.71, 0.71),
-]
-SETTLE_S = 0.9  # ring shrink animation; samples ignored
-SAMPLES_PER_POINT = 40
+SETTLE_S = 1.2  # ring shrink on the start point; samples ignored
 FACE_LOST_WARN_S = 1.0
+MIN_SAMPLES = 100  # below this the display must be redone (face was lost)
 
 BG = QColor(18, 18, 22)
 FG = QColor(235, 235, 240)
@@ -38,10 +36,10 @@ INSTRUCTIONS_FIRST = [
     "Trafo calibration",
     "",
     "• Sit as you normally do, roughly an arm's length from the screen.",
-    "• A blue dot will appear at 9 spots on this display.",
-    "• Follow it with your EYES — try to keep your head still.",
-    "• Keep looking at each dot while its ring shrinks and fills.",
-    "• Blinking is fine; the bad frames are skipped automatically.",
+    "• A dot will glide around this display for about half a minute.",
+    "• Follow it with your EYES and let it pull your gaze smoothly.",
+    "• Keep your head still-ish — eyes do the work.",
+    "• Blinking is fine; bad frames are skipped automatically.",
     "",
     "Press  SPACE  to start    ·    ESC cancels",
 ]
@@ -49,14 +47,22 @@ INSTRUCTIONS_FIRST = [
 INSTRUCTIONS_NEXT = [
     "Next display",
     "",
-    "Same again on this screen — follow the dot with your eyes.",
+    "Same again on this screen — follow the gliding dot with your eyes.",
     "",
     "Press  SPACE  to start    ·    ESC cancels",
 ]
 
+INSTRUCTIONS_RETRY = [
+    "Let's redo this display",
+    "",
+    "Your face wasn't visible long enough — check lighting and camera angle.",
+    "",
+    "Press  SPACE  to retry    ·    ESC cancels",
+]
+
 
 class CalibrationWindow(QWidget):
-    """Emits finished(mapper | None): a fitted GazeMapper, or None if cancelled."""
+    """Emits finished(mapper | None): a fitted mapper, or None if cancelled."""
 
     finished = Signal(object)
 
@@ -67,17 +73,20 @@ class CalibrationWindow(QWidget):
 
         self._screens = QGuiApplication.screens()
         self._screen_i = 0
-        self._point_i = 0
-        self._state = "instructions"  # instructions | settle | collect | done
-        self._phase_t0 = 0.0
+        self._state = "instructions"  # instructions | settle | pursue | done
+        self._retry = False
+        self._phase_t0 = 0.0  # start of the current settle/pursue phase
+        self._target_fn = None  # global path for the current screen
+        self._times: list[float] = []  # seconds since pursue start, per sample
+        self._feats: list[np.ndarray] = []
         self._collected: list[tuple[np.ndarray, np.ndarray, int]] = []  # (features, target, screen)
-        self._point_samples = 0
+        self._lags: dict[int, float] = {}
         self._last_face_t = time.perf_counter()
         self._summary = ""
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.update)
-        self._timer.start(30)
+        self._timer.start(16)  # smooth dot motion
 
     # -- flow ----------------------------------------------------------------
 
@@ -90,7 +99,6 @@ class CalibrationWindow(QWidget):
         # A frameless stays-on-top window with the screen's geometry looks the
         # same and relocates reliably.
         self._screen_i = i
-        self._point_i = 0
         self._state = "instructions"
         screen = self._screens[i]
         self.hide()
@@ -106,25 +114,27 @@ class CalibrationWindow(QWidget):
         self.activateWindow()
         self.setFocus()
 
-    def _begin_point(self) -> None:
+    def _begin_pursuit(self) -> None:
+        g = self.geometry()
+        self._target_fn = pursuit_path((g.x(), g.y(), g.width(), g.height()))
+        self._times, self._feats = [], []
         self._state = "settle"
         self._phase_t0 = time.perf_counter()
-        self._point_samples = 0
 
-    def _point_pos(self) -> tuple[int, int]:
-        gx, gy = GRID[self._point_i]
-        return int(gx * self.width()), int(gy * self.height())
-
-    def _target_global(self) -> np.ndarray:
-        x, y = self._point_pos()
-        g = self.geometry().topLeft()
-        return np.array([g.x() + x, g.y() + y], dtype=float)
-
-    def _next_point(self) -> None:
-        self._point_i += 1
-        if self._point_i < len(GRID):
-            self._begin_point()
-        elif self._screen_i + 1 < len(self._screens):
+    def _end_pursuit(self) -> None:
+        if len(self._feats) < MIN_SAMPLES:
+            # Face was lost for most of the sweep — redo this display.
+            self._retry = True
+            self._state = "instructions"
+            return
+        self._retry = False
+        # Pair features with lag-shifted targets (the eye trails the dot).
+        lag, targets = pair_with_lag(np.array(self._times), self._feats, self._target_fn)
+        self._lags[self._screen_i] = lag
+        self._collected.extend(
+            (f, t, self._screen_i) for f, t in zip(self._feats, targets)
+        )
+        if self._screen_i + 1 < len(self._screens):
             self._move_to_screen(self._screen_i + 1)
         else:
             self._finish()
@@ -137,7 +147,8 @@ class CalibrationWindow(QWidget):
         self._mapper = mapper
         per_screen = "\n".join(
             f"Display {si + 1}: error ≈ {st['rms']:.0f} px"
-            f"  ({st['kept']} samples, {st['dropped']} outliers dropped)"
+            f"  ({st['kept']} samples, {st['dropped']} dropped,"
+            f" lag {self._lags.get(si, 0) * 1000:.0f} ms)"
             for si, st in stats.items()
         )
         self._summary = (
@@ -152,14 +163,14 @@ class CalibrationWindow(QWidget):
     def on_sample(self, s: GazeSample) -> None:
         if s.features is not None:
             self._last_face_t = time.perf_counter()
-        if self._state != "collect":
+        if self._state != "pursue":
             return
         if s.features is None or s.blinking:
             return
-        self._collected.append((s.features, self._target_global(), self._screen_i))
-        self._point_samples += 1
-        if self._point_samples >= SAMPLES_PER_POINT:
-            self._next_point()
+        rel_t = s.timestamp - self._phase_t0
+        if 0.0 <= rel_t <= PURSUIT_DURATION_S:
+            self._times.append(rel_t)
+            self._feats.append(s.features)
 
     # -- input ---------------------------------------------------------------
 
@@ -167,7 +178,7 @@ class CalibrationWindow(QWidget):
         if e.key() == Qt.Key.Key_Escape and self._state != "done":
             self._close_with(None)
         elif self._state == "instructions" and e.key() == Qt.Key.Key_Space:
-            self._begin_point()
+            self._begin_pursuit()
         elif self._state == "done":
             self._close_with(self._mapper)
 
@@ -184,11 +195,18 @@ class CalibrationWindow(QWidget):
         p.fillRect(self.rect(), BG)
 
         if self._state == "instructions":
-            self._paint_text(p, INSTRUCTIONS_FIRST if self._screen_i == 0 else INSTRUCTIONS_NEXT)
+            lines = (
+                INSTRUCTIONS_RETRY if self._retry
+                else INSTRUCTIONS_FIRST if self._screen_i == 0
+                else INSTRUCTIONS_NEXT
+            )
+            self._paint_text(p, lines)
         elif self._state == "done":
             self._paint_text(p, self._summary.split("\n"))
+        elif self._state == "pairing":
+            self._paint_text(p, ["", "Processing…"])
         else:
-            self._paint_point(p)
+            self._paint_pursuit(p)
         p.end()
 
     def _paint_text(self, p: QPainter, lines: list[str]) -> None:
@@ -202,38 +220,53 @@ class CalibrationWindow(QWidget):
             p.drawText(0, y, self.width(), lh, Qt.AlignmentFlag.AlignHCenter, line)
             y += lh
 
-    def _paint_point(self, p: QPainter) -> None:
-        x, y = self._point_pos()
+    def _local_dot(self, t: float) -> tuple[int, int]:
+        g = self.geometry().topLeft()
+        pos = self._target_fn(t)
+        return int(pos[0] - g.x()), int(pos[1] - g.y())
+
+    def _paint_pursuit(self, p: QPainter) -> None:
         now = time.perf_counter()
 
         if self._state == "settle":
             frac = min(1.0, (now - self._phase_t0) / SETTLE_S)
+            x, y = self._local_dot(0.0)
             radius = 36 - 24 * frac
-            if frac >= 1.0:
-                self._state = "collect"
-        else:
-            frac = self._point_samples / SAMPLES_PER_POINT
-            radius = 12
-
-        # progress arc while collecting
-        p.setPen(QPen(ACCENT, 3))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        if self._state == "collect":
-            p.drawArc(x - 22, y - 22, 44, 44, 90 * 16, -int(360 * 16 * frac))
-        else:
+            p.setPen(QPen(ACCENT, 3))
+            p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(int(x - radius), int(y - radius), int(radius * 2), int(radius * 2))
+            if frac >= 1.0:
+                self._state = "pursue"
+                self._phase_t0 = now  # pursue clock starts now
+        else:
+            elapsed = now - self._phase_t0
+            if elapsed >= PURSUIT_DURATION_S:
+                # Window moves / fits must not run inside paintEvent.
+                self._state = "pairing"
+                QTimer.singleShot(0, self._end_pursuit)
+                return
+            x, y = self._local_dot(elapsed)
+            # Thin progress bar along the bottom edge.
+            frac = elapsed / PURSUIT_DURATION_S
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(ACCENT.red(), ACCENT.green(), ACCENT.blue(), 90))
+            p.drawRect(0, self.height() - 4, int(self.width() * frac), 4)
 
         p.setBrush(ACCENT)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(x - 6, y - 6, 12, 12)
+        p.drawEllipse(x - 7, y - 7, 14, 14)
 
         p.setPen(QPen(DIM))
         p.setFont(QFont(self.font().family(), 13))
+        pct = (
+            0 if self._state == "settle"
+            else int(100 * (now - self._phase_t0) / PURSUIT_DURATION_S)
+        )
         p.drawText(
             self.rect().adjusted(0, 0, 0, -20),
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
             f"Display {self._screen_i + 1}/{len(self._screens)}   ·   "
-            f"Point {self._point_i + 1}/{len(GRID)}   ·   ESC to cancel",
+            f"{pct}%   ·   follow the dot   ·   ESC to cancel",
         )
 
         if time.perf_counter() - self._last_face_t > FACE_LOST_WARN_S:

@@ -31,6 +31,9 @@ Cross-platform (macOS / Windows / Linux-X11), webcam-based — no eye-tracker ha
   recalibration needed.
 
 ### Accuracy
+- **Smooth-pursuit calibration** — instead of staring at a few static dots,
+  you follow one dot gliding across each display: ~1000 training samples per
+  screen, with the eye's pursuit lag estimated and compensated automatically.
 - **Multi-display first-class** — calibration visits every connected display;
   a screen classifier (with lock hysteresis) picks the display you're looking
   at, and a per-display model maps eye movement within it.
@@ -105,8 +108,8 @@ applies permission grants only to a freshly launched app, and onboarding has a
 
 ### 4. Calibrate
 
-After the restart, click **Continue to calibration** and follow the dots on
-every display. That's it — enable **Focus follows gaze** in the main window
+After the restart, click **Continue to calibration** and follow the gliding
+dot with your eyes on every display (about half a minute per screen). That's it — enable **Focus follows gaze** in the main window
 and look around.
 
 ## Troubleshooting (macOS)
@@ -159,7 +162,7 @@ uv run trafo app
 | M1 camera | `uv run trafo demo camera` | mirrored live preview with FPS counter; `q`/Esc quits |
 | M2 landmarks | `uv run trafo demo landmarks` | green eye contours + red iris dots tracking your eyes |
 | M3 gaze | `uv run trafo demo gaze` | head-pose axes on your nose + yellow gaze arrow following where you look |
-| M4 app + calibration | `uv run trafo app` | app window; click "Calibrate", follow the dots on every display |
+| M4 app + calibration | `uv run trafo app` | app window; click "Calibrate", follow the gliding dot on every display |
 | M4 gaze dot | `uv run trafo demo dot` | (after calibrating) blue dot follows your gaze across all displays |
 | M5 windows | `uv run trafo windows list` / `uv run trafo windows focus <name>` | window table with rects; focus raises the matched window |
 | M6 focus engine | `uv run trafo app` → enable "Focus follows gaze" | look at a window ~0.5 s and it comes to the front |

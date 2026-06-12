@@ -303,19 +303,32 @@ class ScreenLockedMapper:
             y = np.stack([t for _, t in group])
 
             # Per-point outlier rejection (points identified by their target).
+            # A no-op for smooth-pursuit data, where every target is unique.
             keep = np.zeros(len(x), dtype=bool)
             for target in np.unique(y, axis=0):
                 idx = np.where((y == target).all(axis=1))[0]
                 keep[idx] = _reject_outliers(x[idx])
+            dropped = int((~keep).sum())
             x, y = x[keep], y[keep]
 
             mapper = GazeMapper()
+            mapper.fit(x, y)
+            # Residual-trimmed refit: catch-up saccades during pursuit (and any
+            # bad frames the per-point gate cannot see) are transient samples
+            # the model cannot explain — drop them and fit again.
+            xs = (x - mapper.mean) / _FIXED_SCALE
+            res = np.linalg.norm(_expand(xs) @ mapper.weights - y, axis=1)
+            mad = np.median(np.abs(res - np.median(res))) + 1e-9
+            keep2 = res <= np.median(res) + 3.5 * mad
+            dropped += int((~keep2).sum())
+            x, y = x[keep2], y[keep2]
             rms = mapper.fit(x, y)
+
             self.centroids.append(x.mean(axis=0))
             self.mappers.append(mapper)
             self._cal_x.append(x)
             self._cal_y.append(y)
-            stats[si] = {"rms": rms, "kept": int(keep.sum()), "dropped": int((~keep).sum())}
+            stats[si] = {"rms": rms, "kept": int(len(x)), "dropped": dropped}
         self._fit_classifier()
         return stats
 
