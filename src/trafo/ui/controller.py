@@ -8,6 +8,7 @@ sync and none of them owns the pipeline.
 
 from __future__ import annotations
 
+import sys
 import time
 from collections import deque
 
@@ -24,6 +25,23 @@ from ..gaze.stabilizer import GazeStabilizer
 from ..winmgr import get_window_manager
 from .overlay import GazeOverlay
 from .worker import GazeWorker
+
+
+def _seconds_since_last_keypress() -> float | None:
+    """System-wide time since the last keypress (macOS; no permission needed).
+
+    Polled instead of running a pynput keyboard listener: macOS aborts any
+    process that calls Text Input Services off the main thread, which is
+    exactly what pynput's listener thread does on every key event
+    (TSMGetInputSourceProperty -> dispatch_assert_queue_fail -> SIGTRAP).
+    """
+    if sys.platform != "darwin":
+        return None
+    import Quartz
+
+    return Quartz.CGEventSourceSecondsSinceLastEventType(
+        Quartz.kCGEventSourceStateHIDSystemState, Quartz.kCGEventKeyDown
+    )
 
 
 class TrafoController(QObject):
@@ -193,6 +211,8 @@ class TrafoController(QObject):
         self.engine_changed.emit(True)
 
     def _start_key_listener(self) -> None:
+        if sys.platform == "darwin":
+            return  # keyboard activity is polled instead (see module helper)
         if self._key_listener is not None:
             return
         listener = KeyListener(self._key.emit)
@@ -292,6 +312,11 @@ class TrafoController(QObject):
         self._last_cursor = cur
 
         if self._engine is not None:
+            # Keyboard outranks gaze too. On macOS the last-keypress time is
+            # polled (no listener thread); elsewhere KeyListener feeds it.
+            elapsed = _seconds_since_last_keypress()
+            if elapsed is not None:
+                self._engine.note_keyboard_activity(s.timestamp - elapsed)
             focused = self._engine.update(point[0], point[1], s.timestamp)
             if focused is not None:
                 self.focus_switched.emit(focused)
