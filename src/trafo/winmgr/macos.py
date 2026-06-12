@@ -22,6 +22,36 @@ from .base import WindowInfo, WindowManager
 
 _MIN_SIZE = 40  # skip tooltip/utility scraps
 
+# System chrome that reports full-display windows (the Dock's window spans the
+# whole screen) — never gaze blockers, never targets.
+_SYSTEM_OWNERS = {
+    "Dock", "Window Server", "Notification Center", "Control Center",
+    "Spotlight", "Screenshot",
+}
+_FULLSCREEN_COVERAGE = 0.9  # fraction of a display an overlay must cover
+
+
+def _display_rects() -> list[tuple[float, float, float, float]]:
+    err, ids, _ = Quartz.CGGetActiveDisplayList(16, None, None)
+    if err != 0:
+        return []
+    out = []
+    for d in ids or []:
+        r = Quartz.CGDisplayBounds(d)
+        out.append((r.origin.x, r.origin.y, r.size.width, r.size.height))
+    return out
+
+
+def _covers_a_display(rect, displays) -> bool:
+    """True when rect covers ≥ _FULLSCREEN_COVERAGE of any display."""
+    x, y, w, h = rect
+    for dx, dy, dw, dh in displays:
+        ix = max(0.0, min(x + w, dx + dw) - max(x, dx))
+        iy = max(0.0, min(y + h, dy + dh) - max(y, dy))
+        if dw * dh > 0 and ix * iy >= _FULLSCREEN_COVERAGE * dw * dh:
+            return True
+    return False
+
 
 def _ax_attr(element, name):
     err, value = AS.AXUIElementCopyAttributeValue(element, name, None)
@@ -48,10 +78,9 @@ class MacWindowManager(WindowManager):
             Quartz.kCGNullWindowID,
         )
         own_pid = os.getpid()
+        displays = _display_rects()
         out: list[WindowInfo] = []
         for w in infos or []:
-            if w.get(Quartz.kCGWindowLayer, 1) != 0:  # 0 = normal app windows
-                continue
             pid = w.get(Quartz.kCGWindowOwnerPID)
             if pid is None:
                 continue
@@ -61,14 +90,29 @@ class MacWindowManager(WindowManager):
             rect = (b.get("X", 0), b.get("Y", 0), b.get("Width", 0), b.get("Height", 0))
             if rect[2] < _MIN_SIZE or rect[3] < _MIN_SIZE:
                 continue
+            app = str(w.get(Quartz.kCGWindowOwnerName) or "")
+            layer = w.get(Quartz.kCGWindowLayer, 1)
+            blocker = False
+            if layer != 0:  # 0 = normal app windows
+                # Fullscreen overlays (video players etc.) sit above the
+                # normal layer; without them in the list, gaze falls through
+                # to the windows underneath and steals focus mid-video. Keep
+                # them as untargetable blockers; skip everything else.
+                if app in _SYSTEM_OWNERS:
+                    continue
+                if not (layer > 0 and _covers_a_display(rect, displays)):
+                    continue
+                blocker = True
             out.append(
                 WindowInfo(
                     id=int(w.get(Quartz.kCGWindowNumber, 0)),
                     title=str(w.get(Quartz.kCGWindowName) or ""),
-                    app=str(w.get(Quartz.kCGWindowOwnerName) or ""),
+                    app=app,
                     pid=int(pid),
                     rect=rect,
-                    own=int(pid) == own_pid,
+                    # `own` means "blocks gaze, never a focus target" — true
+                    # for Trafo's windows and for fullscreen overlays.
+                    own=int(pid) == own_pid or blocker,
                 )
             )
         return out  # CGWindowList is already front-to-back
