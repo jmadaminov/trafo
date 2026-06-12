@@ -89,31 +89,49 @@ class MacWindowManager(WindowManager):
         ax_windows = _ax_attr(app_ref, AS.kAXWindowsAttribute)
         if not ax_windows:
             return False
-
-        best, best_score = None, float("inf")
-        for axwin in ax_windows:
-            score = 0.0
-            rect = _ax_rect(axwin)
-            if rect is not None:
-                score += sum(abs(a - b) for a, b in zip(rect, window.rect))
-            else:
-                score += 10_000
-            title = _ax_attr(axwin, AS.kAXTitleAttribute)
-            if window.title and title != window.title:
-                score += 500
-            if score < best_score:
-                best, best_score = axwin, score
-
+        best = self._match_ax_window(ax_windows, window)
         if best is None:
             return False
+
+        # Order matters for multi-window apps: activating an app brings its
+        # *main* window forward, so the target must already be main before
+        # activation — otherwise the app's previous window (possibly on
+        # another display) is the one that gets raised.
+        AS.AXUIElementSetAttributeValue(best, AS.kAXMainAttribute, True)
+        AS.AXUIElementSetAttributeValue(app_ref, AS.kAXFocusedWindowAttribute, best)
         if AS.AXUIElementPerformAction(best, AS.kAXRaiseAction) != 0:
             return False
-        AS.AXUIElementSetAttributeValue(best, AS.kAXMainAttribute, True)
 
         app = NSRunningApplication.runningApplicationWithProcessIdentifier_(window.pid)
         if app is not None:
             app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+            # AX calls and activation race (separate async channels into the
+            # app); re-assert so the target wins even if activation restored
+            # the app's previous main window.
+            AS.AXUIElementSetAttributeValue(best, AS.kAXMainAttribute, True)
+            AS.AXUIElementPerformAction(best, AS.kAXRaiseAction)
         return True
+
+    @staticmethod
+    def _match_ax_window(ax_windows, window: WindowInfo):
+        """The app's AX window best matching the CG window's rect (and title)."""
+        best, best_score = None, float("inf")
+        for axwin in ax_windows:
+            if _ax_attr(axwin, AS.kAXMinimizedAttribute):
+                continue  # CG hit is on-screen; a minimized window can't be it
+            rect = _ax_rect(axwin)
+            score = (
+                sum(abs(a - b) for a, b in zip(rect, window.rect))
+                if rect is not None else 10_000.0
+            )
+            title = _ax_attr(axwin, AS.kAXTitleAttribute)
+            # Tie-break by title only when both sides actually have one
+            # (CG names are empty without Screen Recording permission).
+            if window.title and title and title != window.title:
+                score += 500
+            if score < best_score:
+                best, best_score = axwin, score
+        return best
 
     def permissions_missing(self) -> list[str]:
         missing = []
