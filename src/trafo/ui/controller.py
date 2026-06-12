@@ -249,17 +249,6 @@ class TrafoController(QObject):
         if self._engine is not None:
             self._engine.cfg.excluded_apps = frozenset(a.lower() for a in names)
 
-    def running_apps(self) -> list[str]:
-        """Sorted unique app names with on-screen windows (for the rules dialog)."""
-        try:
-            wm = get_window_manager()
-            return sorted(
-                {w.app for w in wm.list_windows() if w.app and not w.own}
-                - {"Trafo"}  # another Trafo process (e.g. installed copy) isn't a target
-            )
-        except Exception:
-            return []
-
     def recenter(self, target_xy: tuple[float, float]) -> bool:
         """Cancel residual bias using a known gaze target (the user is looking there)."""
         if self.mapper is None or len(self._history) < 5:
