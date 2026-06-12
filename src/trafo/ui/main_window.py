@@ -166,6 +166,33 @@ class MainWindow(QWidget):
         self.mouse_pause_spin.valueChanged.connect(self.c.set_mouse_pause_s)
         mouse_row.addWidget(self.mouse_pause_spin)
         beh_card.add_layout(mouse_row)
+
+        key_row = QHBoxLayout()
+        key_label = QLabel("Keyboard pause")
+        key_hint = QLabel("pause after typing")
+        key_hint.setObjectName("Caption")
+        key_row.addWidget(key_label)
+        key_row.addWidget(key_hint, 1)
+        self.key_pause_spin = QSpinBox()
+        self.key_pause_spin.setRange(0, 30)
+        self.key_pause_spin.setSuffix(" s")
+        self.key_pause_spin.setToolTip(
+            "After you press a key, gaze won't switch focus for this long — "
+            "focus never jumps mid-typing. 0 disables the pause."
+        )
+        self.key_pause_spin.setValue(self.c.settings.keyboard_pause_s)
+        self.key_pause_spin.valueChanged.connect(self.c.set_keyboard_pause_s)
+        key_row.addWidget(self.key_pause_spin)
+        beh_card.add_layout(key_row)
+
+        rules_row = QHBoxLayout()
+        rules_hint = QLabel("Apps gaze should never raise")
+        rules_hint.setObjectName("Caption")
+        rules_row.addWidget(rules_hint, 1)
+        self.rules_btn = QPushButton("App rules…")
+        self.rules_btn.clicked.connect(self._open_app_rules)
+        rules_row.addWidget(self.rules_btn)
+        beh_card.add_layout(rules_row)
         root.addWidget(beh_card)
 
         # -- Footer --
@@ -243,6 +270,11 @@ class MainWindow(QWidget):
         center = self.recenter_btn.mapToGlobal(self.recenter_btn.rect().center())
         if not self.c.recenter((center.x(), center.y())):
             self.notice_label.setText("Look at the button while clicking it.")
+
+    def _open_app_rules(self) -> None:
+        from .app_rules import AppRulesDialog
+
+        AppRulesDialog(self.c, self).exec()
 
     def _open_debug(self) -> None:
         from .debug_view import DebugView

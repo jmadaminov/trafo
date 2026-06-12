@@ -34,4 +34,5 @@ python-preference = "managed"
 [dependency-groups]
 dev = [
     "pyinstaller>=6.20.0",
+    "pytest>=9.0.3",
 ]

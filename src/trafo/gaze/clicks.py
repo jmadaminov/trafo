@@ -88,3 +88,30 @@ class ClickListener:
         if self._listener is not None:
             self._listener.stop()
             self._listener = None
+
+
+class KeyListener:
+    """Global key-press listener (pynput); fires callback() from its own thread."""
+
+    def __init__(self, callback):
+        self._callback = callback
+        self._listener = None
+
+    def start(self) -> bool:
+        try:
+            from pynput import keyboard
+
+            def on_press(_key):
+                self._callback()
+
+            self._listener = keyboard.Listener(on_press=on_press)
+            self._listener.daemon = True
+            self._listener.start()
+            return True
+        except Exception:
+            return False
+
+    def stop(self) -> None:
+        if self._listener is not None:
+            self._listener.stop()
+            self._listener = None

@@ -27,12 +27,18 @@ fi
 uv run pyinstaller packaging/trafo.spec --noconfirm --clean
 
 echo "==> Creating ${DMG}"
+# A mounted copy of a previous DMG makes hdiutil fail — detach it first.
+if [[ -d "/Volumes/Trafo" ]]; then
+  hdiutil detach "/Volumes/Trafo" || true
+fi
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 ditto dist/Trafo.app "$STAGING/Trafo.app"
 ln -s /Applications "$STAGING/Applications"
 rm -f "$DMG"
-hdiutil create -volname "Trafo" -srcfolder "$STAGING" -ov -format UDZO -quiet "$DMG"
+if ! hdiutil create -volname "Trafo" -srcfolder "$STAGING" -ov -format UDZO "$DMG"; then
+  echo "    WARNING: DMG creation failed — dist/Trafo.app itself is fine."
+fi
 
 if [[ "${1:-}" == "--install" ]]; then
   echo "==> Installing to /Applications/Trafo.app"

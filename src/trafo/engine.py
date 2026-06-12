@@ -20,12 +20,17 @@ Rules:
 - Mouse wins over gaze: any cursor movement within the last `mouse_pause_s`
   suspends gaze focusing entirely (the user is actively pointing; stealing
   focus out from under the cursor is never what they want).
+- Keyboard wins over gaze too: any keypress within `keyboard_pause_s`
+  suspends focusing the same way (focus must never jump mid-typing).
+- Excluded apps (`excluded_apps`, matched case-insensitively against the
+  window's app name) behave like own windows: they block the gaze hit but
+  are never raised.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .winmgr.base import WindowInfo, WindowManager
 
@@ -38,6 +43,8 @@ class EngineConfig:
     list_refresh_s: float = 0.25  # how often the window list is re-fetched
     edge_margin_px: float = 75.0  # spatial hysteresis scale (~typical gaze error)
     mouse_pause_s: float = 5.0  # gaze focusing is suspended this long after mouse use
+    keyboard_pause_s: float = 5.0  # …and this long after a keypress
+    excluded_apps: frozenset[str] = field(default_factory=frozenset)  # lowercase app names
 
 
 class FocusEngine:
@@ -52,6 +59,7 @@ class FocusEngine:
         self._mismatch_since: float | None = None
         self._cooldown_until = -math.inf
         self._last_mouse_t = -math.inf
+        self._last_key_t = -math.inf
 
     @property
     def pending(self) -> WindowInfo | None:
@@ -62,11 +70,19 @@ class FocusEngine:
         """Record that the user moved the mouse at time `t` (same clock as update)."""
         self._last_mouse_t = t
 
+    def note_keyboard_activity(self, t: float) -> None:
+        """Record that the user pressed a key at time `t` (same clock as update)."""
+        self._last_key_t = t
+
     def update(self, x: float, y: float, t: float) -> WindowInfo | None:
         """Feed one gaze point; returns the window if this tick switched focus."""
-        if t - self._last_mouse_t < self.cfg.mouse_pause_s:
-            # The mouse is (recently) in use — it outranks gaze. Drop any
-            # accumulating dwell so a stale one can't fire when the pause ends.
+        if (
+            t - self._last_mouse_t < self.cfg.mouse_pause_s
+            or t - self._last_key_t < self.cfg.keyboard_pause_s
+        ):
+            # Mouse or keyboard is (recently) in use — input outranks gaze.
+            # Drop any accumulating dwell so a stale one can't fire when the
+            # pause ends.
             self._pending = None
             self._mismatch_since = None
             return None
@@ -132,6 +148,8 @@ class FocusEngine:
 
         if hit.own:
             return None  # our own UI: blocks the gaze, never a target
+        if hit.app.lower() in self.cfg.excluded_apps:
+            return None  # user-excluded app: blocks the gaze, never raised
         if self._focused is not None:
             if hit.id == self._focused.id:
                 return None  # already has focus

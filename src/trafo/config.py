@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "trafo"
@@ -20,6 +20,8 @@ def ensure_config_dir() -> Path:
 class Settings:
     dwell_ms: int = 500
     mouse_pause_s: int = 5  # gaze focusing pauses this long after mouse movement
+    keyboard_pause_s: int = 5  # …and this long after a keypress
+    excluded_apps: list[str] = field(default_factory=list)  # never auto-raised
     learn_from_clicks: bool = True
     onboarded: bool = False
 

@@ -181,3 +181,68 @@ def test_zero_mouse_pause_disables_suspension():
     engine.note_mouse_activity(0.0)
     focused = run_gaze(engine, 700, 100, 0.0, 1.0)
     assert [w.id for w in focused] == [B.id]
+
+
+# -- keyboard outranks gaze ----------------------------------------------------
+
+
+def test_recent_typing_suspends_gaze_focus():
+    engine, wm = make_engine()
+    engine.note_keyboard_activity(0.0)
+    focused = run_gaze(engine, 700, 100, 0.0, 4.0)  # stare at B for 4s < pause 5s
+    assert focused == []
+    assert wm.focus_calls == []
+
+
+def test_gaze_focus_resumes_after_keyboard_pause():
+    engine, wm = make_engine()
+    engine.note_keyboard_activity(0.0)
+    focused = run_gaze(engine, 700, 100, 0.0, 6.0)  # pause ends at 5.0, dwell 0.5
+    assert [w.id for w in focused] == [B.id]
+
+
+def test_typing_drops_accumulated_dwell():
+    engine, wm = make_engine()
+    engine.cfg.keyboard_pause_s = 1.0
+    run_gaze(engine, 700, 100, 0.0, 0.4)  # dwell on B almost complete
+    engine.note_keyboard_activity(0.4)
+    focused = run_gaze(engine, 700, 100, 0.4, 1.85)  # pause + restarted dwell
+    assert focused == []
+    focused = run_gaze(engine, 700, 100, 1.85, 2.2)
+    assert [w.id for w in focused] == [B.id]
+
+
+def test_zero_keyboard_pause_disables_suspension():
+    engine, wm = make_engine()
+    engine.cfg.keyboard_pause_s = 0.0
+    engine.note_keyboard_activity(0.0)
+    focused = run_gaze(engine, 700, 100, 0.0, 1.0)
+    assert [w.id for w in focused] == [B.id]
+
+
+# -- per-app exclusion rules ---------------------------------------------------
+
+
+def test_excluded_app_is_never_focused():
+    engine, wm = make_engine()
+    engine.cfg.excluded_apps = frozenset({"appb"})
+    focused = run_gaze(engine, 700, 100, 0.0, 2.0)  # stare at B (app "AppB")
+    assert focused == []
+    assert wm.focus_calls == []
+
+
+def test_excluded_app_blocks_window_behind_it():
+    """Looking at an excluded app must not raise the window underneath."""
+    wm = FakeWM([SMALL, BIG], focused=BIG)
+    engine = FocusEngine(wm, EngineConfig(excluded_apps=frozenset({"chat"})))
+    focused = run_gaze(engine, 700, 400, 0.0, 2.0)  # inside SMALL (app "Chat")
+    assert focused == []
+    assert wm.focus_calls == []  # BIG behind it must not be raised either
+
+
+def test_exclusion_match_is_case_insensitive():
+    engine, wm = make_engine()
+    engine.cfg.excluded_apps = frozenset({"appb"})  # stored lowercase
+    assert run_gaze(engine, 700, 100, 0.0, 2.0) == []  # WindowInfo.app == "AppB"
+    engine.cfg.excluded_apps = frozenset()
+    assert [w.id for w in run_gaze(engine, 700, 100, 2.0, 4.0)] == [B.id]

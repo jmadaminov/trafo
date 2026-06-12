@@ -18,7 +18,7 @@ from PySide6.QtGui import QCursor, QGuiApplication
 from ..config import Settings
 from ..engine import EngineConfig, FocusEngine
 from ..gaze.calibration import ScreenLockedMapper
-from ..gaze.clicks import ClickListener, ClickSampleGate, GazeHistoryEntry
+from ..gaze.clicks import ClickListener, ClickSampleGate, GazeHistoryEntry, KeyListener
 from ..gaze.estimator import GazeSample
 from ..gaze.stabilizer import GazeStabilizer
 from ..winmgr import get_window_manager
@@ -42,6 +42,7 @@ class TrafoController(QObject):
     click_learning_changed = Signal(bool)
     notice = Signal(str)  # transient human-readable message
     _click = Signal(float, float)  # marshals pynput-thread clicks onto this object's thread
+    _key = Signal()  # marshals pynput-thread keypresses onto this object's thread
 
     def __init__(self, camera_index: int = 0, parent=None):
         super().__init__(parent)
@@ -62,9 +63,11 @@ class TrafoController(QObject):
         self._stabilizer = GazeStabilizer()
         self._click_gate = ClickSampleGate()
         self._click_listener: ClickListener | None = None
+        self._key_listener: KeyListener | None = None
 
         self.worker = self._new_worker()
         self._click.connect(self._handle_click, Qt.ConnectionType.QueuedConnection)
+        self._key.connect(self._handle_key, Qt.ConnectionType.QueuedConnection)
 
     def _new_worker(self) -> GazeWorker:
         worker = GazeWorker(self._camera_index, parent=self)
@@ -162,6 +165,7 @@ class TrafoController(QObject):
     def set_engine(self, on: bool) -> None:
         if not on:
             self._engine = None
+            self._stop_key_listener()
             self.engine_changed.emit(False)
             return
         if not self.is_calibrated:
@@ -181,9 +185,26 @@ class TrafoController(QObject):
         self._engine = FocusEngine(wm, EngineConfig(
             dwell_s=self.settings.dwell_ms / 1000,
             mouse_pause_s=float(self.settings.mouse_pause_s),
+            keyboard_pause_s=float(self.settings.keyboard_pause_s),
+            excluded_apps=frozenset(a.lower() for a in self.settings.excluded_apps),
         ))
         self._engine.note_mouse_activity(self._last_mouse_move_t)
+        self._start_key_listener()
         self.engine_changed.emit(True)
+
+    def _start_key_listener(self) -> None:
+        if self._key_listener is not None:
+            return
+        listener = KeyListener(self._key.emit)
+        if listener.start():
+            self._key_listener = listener
+        else:
+            self.notice.emit("Keyboard pause unavailable (keyboard listener failed).")
+
+    def _stop_key_listener(self) -> None:
+        if self._key_listener is not None:
+            self._key_listener.stop()
+            self._key_listener = None
 
     def set_click_learning(self, on: bool) -> None:
         self.settings.learn_from_clicks = on
@@ -215,6 +236,29 @@ class TrafoController(QObject):
         self.settings.save()
         if self._engine is not None:
             self._engine.cfg.mouse_pause_s = float(value)
+
+    def set_keyboard_pause_s(self, value: int) -> None:
+        self.settings.keyboard_pause_s = value
+        self.settings.save()
+        if self._engine is not None:
+            self._engine.cfg.keyboard_pause_s = float(value)
+
+    def set_excluded_apps(self, names: list[str]) -> None:
+        self.settings.excluded_apps = sorted(set(names))
+        self.settings.save()
+        if self._engine is not None:
+            self._engine.cfg.excluded_apps = frozenset(a.lower() for a in names)
+
+    def running_apps(self) -> list[str]:
+        """Sorted unique app names with on-screen windows (for the rules dialog)."""
+        try:
+            wm = get_window_manager()
+            return sorted(
+                {w.app for w in wm.list_windows() if w.app and not w.own}
+                - {"Trafo"}  # another Trafo process (e.g. installed copy) isn't a target
+            )
+        except Exception:
+            return []
 
     def recenter(self, target_xy: tuple[float, float]) -> bool:
         """Cancel residual bias using a known gaze target (the user is looking there)."""
@@ -263,6 +307,10 @@ class TrafoController(QObject):
             if focused is not None:
                 self.focus_switched.emit(focused)
 
+    def _handle_key(self) -> None:
+        if self._engine is not None:
+            self._engine.note_keyboard_activity(time.perf_counter())
+
     def _handle_click(self, x: float, y: float) -> None:
         if self.mapper is None or self._calibrating:
             return
@@ -282,5 +330,6 @@ class TrafoController(QObject):
     def shutdown(self) -> None:
         if self._click_listener is not None:
             self._click_listener.stop()
+        self._stop_key_listener()
         self.worker.stop()
         self.overlay.close()
