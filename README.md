@@ -4,6 +4,56 @@ Gaze-driven window focus: look at a window and Trafo brings it to the front.
 
 Cross-platform (macOS / Windows / Linux-X11), webcam-based — no eye-tracker hardware needed.
 
+## Features
+
+### Gaze → focus
+- **Look at a window and it comes forward** after a configurable dwell
+  (default 500 ms), with flicker tolerance and a cooldown so focus never churns
+  while your eyes dart around.
+- **Focus-aware hit testing** — Trafo asks the OS which window really has
+  focus instead of trusting z-order: small windows floating over fullscreen
+  ones behave correctly, and gaze spill just outside the focused window never
+  raises the window behind it.
+- **Multi-window apps done right** — two Chrome windows on two monitors? The
+  exact window you look at is raised, regardless of which one the app
+  considers "main".
+
+### You stay in control
+- **Mouse outranks gaze** — moving the mouse pauses gaze focusing
+  (configurable 0–30 s, default 5 s).
+- **Keyboard outranks gaze** — focus never jumps mid-typing (configurable,
+  default 5 s).
+- **App rules** — pick any installed app that gaze must never raise (games,
+  video players, presentations).
+- **Fullscreen-aware** — a fullscreen video overlay (e.g. Telegram's player)
+  blocks gaze focusing instead of leaking it to the windows behind it.
+- **Re-center** — one glance + click cancels accumulated drift; no full
+  recalibration needed.
+
+### Accuracy
+- **Multi-display first-class** — calibration visits every connected display;
+  a screen classifier (with lock hysteresis) picks the display you're looking
+  at, and a per-display model maps eye movement within it.
+- **A stable gaze point** — median despiking, One Euro smoothing, and
+  fixation freeze keep the point still while you stare; blinks are rejected so
+  they can't fling it across the screen.
+- **Click learning** — you look at what you click, so stable on-target clicks
+  become fresh training data (suspicious ones are rejected). Accuracy improves
+  with normal use and survives restarts.
+- **1080p capture** — the iris gets as many pixels as possible.
+
+### A real Mac app
+- **Menu-bar app** — lives in the tray with quick toggles; closing the window
+  keeps it running in the background.
+- **First-run onboarding** — live permission checks with one-click grant and
+  restart.
+- **Live debug view** — camera feed with eye landmarks, FPS, blink state,
+  locked screen and fixation status, for diagnosing accuracy on your setup.
+- **Easy install** — drag-to-install DMG; offers to move itself to
+  /Applications on first launch.
+- **Private by design** — all processing happens on-device (MediaPipe runs
+  locally); no frame, image, or gaze data ever leaves your machine.
+
 ## Install (macOS beta)
 
 ### 1. Get the app
@@ -122,17 +172,6 @@ accuracy on a given setup.
 
 - **Linux:** X11 only. Wayland has no portable API for global window geometry or
   programmatic focus, so it is out of scope.
-- **Gaze accuracy:** webcam gaze estimation is good to roughly ±2–5 cm after calibration —
-  enough to pick a window, not a pixel. Dwell time + hysteresis prevent focus flapping.
-  Camera capture runs at 1080p so the iris gets as many pixels as possible.
-- **Stability:** the gaze point is despiked (median prefilter), smoothed (One Euro), and
-  frozen during fixations, so the dot sits still when you stare and only moves on a real
-  saccade. Blinks (either eye partially closing, plus a short settle hold) are dropped so
-  they cannot fling the dot.
-- **Multiple displays:** fully supported. Calibration visits every connected display; a
-  screen classifier (with lock hysteresis) picks the display you're looking at, and a
-  per-display model maps eye movement within it. Recalibrate after plugging or unplugging
-  a monitor, or after moving the webcam.
-- **Click learning:** you look at what you click, so stable on-target clicks are folded
-  into the model as fresh ground truth (suspicious clicks are rejected). Accuracy improves
-  with normal use and survives restarts. Toggle in the app window.
+- **Expectations:** webcam gaze estimation is good to roughly ±2–5 cm after
+  calibration — enough to pick a window, not a pixel. Recalibrate after moving
+  the webcam or plugging/unplugging a monitor.
