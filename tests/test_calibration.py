@@ -19,6 +19,11 @@ def synthetic_data(n=300, seed=0):
             rng.normal(0.5, 0.05, n),  # face_cx
             rng.normal(0.4, 0.05, n),  # face_cy
             rng.normal(0.14, 0.01, n),  # eye_dist
+            rng.normal(0, 2, n),  # head_tx
+            rng.normal(0, 2, n),  # head_ty
+            rng.normal(-45, 3, n),  # head_tz
+            rng.normal(0, 0.02, n),  # cheek_dz
+            rng.normal(1.0, 0.1, n),  # oval_ratio
         ]
     )
     gx = 800 + 9000 * x[:, 3] + 8000 * x[:, 5] + 25 * x[:, 1]
@@ -79,6 +84,11 @@ def test_posture_shift_does_not_explode_prediction():
             rng.normal(0.5, 0.01, n),  # face barely moves
             rng.normal(0.4, 0.01, n),
             rng.normal(0.14, 0.003, n),
+            rng.normal(0, 0.4, n),  # head position nearly constant
+            rng.normal(0, 0.4, n),
+            rng.normal(-45, 0.6, n),
+            rng.normal(0, 0.005, n),  # asymmetry nearly constant
+            rng.normal(1.0, 0.02, n),
         ]
     )
     gx = 800 + 9000 * x[:, 3] + 8000 * x[:, 5]

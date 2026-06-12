@@ -15,6 +15,17 @@ def rotation(transform: np.ndarray) -> np.ndarray:
     return transform[:3, :3]
 
 
+def translation(transform: np.ndarray) -> tuple[float, float, float]:
+    """(tx, ty, tz): head position in camera space (cm-ish units).
+
+    A metric version of the frame-relative face center — unlike normalized
+    frame coordinates, it does not change when the camera resolution or
+    aspect ratio does.
+    """
+    t = transform[:3, 3]
+    return float(t[0]), float(t[1]), float(t[2])
+
+
 def euler_degrees(transform: np.ndarray) -> tuple[float, float, float]:
     """(pitch, yaw, roll) in degrees.
 

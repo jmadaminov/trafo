@@ -1,6 +1,6 @@
 """Mapping from gaze features to a point on the (multi-display) virtual desktop.
 
-Ridge regression on an expanded feature vector: the 10 base features plus
+Ridge regression on an expanded feature vector: the 15 base features plus
 pairwise products of the pose/iris terms. Targets are global virtual-desktop
 coordinates, so a calibration that visited several displays maps gaze onto all
 of them with a single model.
@@ -34,20 +34,34 @@ from .features import FEATURE_NAMES
 _PAIR_IDX = [0, 1, 3, 4, 5, 6]
 
 # Typical magnitudes per feature: degrees for pose, normalized units for the
-# rest. Fixed so that posture-induced variance can never be amplified.
-_FIXED_SCALE = np.array([10.0, 10.0, 10.0, 0.04, 0.04, 0.04, 0.04, 0.08, 0.08, 0.03])
+# rest, cm-ish for head translation. Fixed so that posture-induced variance
+# can never be amplified.
+_FIXED_SCALE = np.array([
+    10.0, 10.0, 10.0,            # pitch, yaw, roll (deg)
+    0.04, 0.04, 0.04, 0.04,      # iris offsets
+    0.08, 0.08, 0.03,            # face_cx, face_cy, eye_dist
+    5.0, 5.0, 5.0,               # head_tx, head_ty, head_tz (cm-ish)
+    0.05, 0.3,                   # cheek_dz, oval_ratio
+])
 
 # Relative ridge penalty per base feature (same order as FEATURE_NAMES):
 # iris offsets cheap (1), pitch/yaw moderate (head turns toward a far monitor
 # are real signal), roll / face position / eye distance expensive. Where head
 # pose and iris are collinear (they always are in calibration data), ridge
 # shifts the credit onto the cheap iris terms — exactly the "trust eyes over
-# face" behavior we want.
-_BASE_PENALTY = np.array([15.0, 15.0, 75.0, 1.0, 1.0, 1.0, 1.0, 75.0, 75.0, 75.0])
+# face" behavior we want. The head-state tail (translation + asymmetry) exists
+# for the screen classifier; the within-screen regression must not lean on it.
+_BASE_PENALTY = np.array([
+    15.0, 15.0, 75.0,
+    1.0, 1.0, 1.0, 1.0,
+    75.0, 75.0, 75.0,
+    75.0, 75.0, 75.0,
+    75.0, 75.0,
+])
 
 
 def _expand(xs: np.ndarray) -> np.ndarray:
-    """(n, 10) scaled features -> (n, 32) design matrix with bias."""
+    """(n, 15) scaled features -> (n, 37) design matrix with bias."""
     n = xs.shape[0]
     pairs = [xs[:, i] * xs[:, j] for k, i in enumerate(_PAIR_IDX) for j in _PAIR_IDX[k:]]
     return np.column_stack([np.ones(n), xs, *pairs])
@@ -67,7 +81,7 @@ class GazeMapper:
     def __init__(self, alpha: float = 0.02):
         self.alpha = alpha
         self.mean: np.ndarray | None = None
-        self.weights: np.ndarray | None = None  # (32, 2)
+        self.weights: np.ndarray | None = None  # (37, 2)
 
     @property
     def is_fitted(self) -> bool:
@@ -79,7 +93,7 @@ class GazeMapper:
         targets: np.ndarray,
         sample_weight: np.ndarray | None = None,
     ) -> float:
-        """Fit on (n, 10) features and (n, 2) global screen targets; returns RMS px error."""
+        """Fit on (n, 15) features and (n, 2) global screen targets; returns RMS px error."""
         x = np.asarray(features, dtype=float)
         y = np.asarray(targets, dtype=float)
         self.mean = x.mean(axis=0)
@@ -99,7 +113,7 @@ class GazeMapper:
         return self.rms(x, y)
 
     def predict(self, features: np.ndarray) -> np.ndarray:
-        """(10,) feature vector -> (2,) global screen point."""
+        """(15,) feature vector -> (2,) global screen point."""
         if not self.is_fitted:
             raise RuntimeError("GazeMapper is not fitted")
         xs = (np.atleast_2d(features) - self.mean) / _FIXED_SCALE
@@ -166,12 +180,70 @@ def _reject_outliers(features: np.ndarray, keep_mad: float = 3.5) -> np.ndarray:
     return dist <= np.median(dist) + keep_mad * mad
 
 
+class _SoftmaxClassifier:
+    """L2-regularized multinomial logistic regression for screen classification.
+
+    Tiny and dependency-free: full-batch gradient descent on a few thousand
+    scaled samples runs in milliseconds and is deterministic (zero init).
+    Unlike the nearest-centroid fallback it learns which features actually
+    separate the screens — head yaw/position for head-turn switches, iris
+    terms for eyes-only switches — instead of weighting everything equally.
+    """
+
+    def __init__(self, l2: float = 1e-2, iters: int = 300, lr: float = 0.5):
+        self.l2, self.iters, self.lr = l2, iters, lr
+        self.mean: np.ndarray | None = None
+        self.w: np.ndarray | None = None  # (n_classes, n_features + 1)
+
+    @property
+    def is_fitted(self) -> bool:
+        return self.w is not None
+
+    @staticmethod
+    def _softmax(z: np.ndarray) -> np.ndarray:
+        z = z - z.max(axis=-1, keepdims=True)
+        e = np.exp(z)
+        return e / e.sum(axis=-1, keepdims=True)
+
+    def _design(self, features: np.ndarray) -> np.ndarray:
+        xs = (np.atleast_2d(features) - self.mean) / _FIXED_SCALE
+        return np.column_stack([np.ones(len(xs)), xs])
+
+    def fit(self, features: np.ndarray, labels: np.ndarray, n_classes: int) -> None:
+        x = np.asarray(features, dtype=float)
+        self.mean = x.mean(axis=0)
+        phi = self._design(x)
+        y = np.eye(n_classes)[np.asarray(labels, dtype=int)]
+        w = np.zeros((n_classes, phi.shape[1]))
+        for _ in range(self.iters):
+            p = self._softmax(phi @ w.T)
+            grad = (p - y).T @ phi / len(phi) + self.l2 * w
+            grad[:, 0] -= self.l2 * w[:, 0]  # bias unpenalized
+            w -= self.lr * grad
+        self.w = w
+
+    def proba(self, features: np.ndarray) -> np.ndarray:
+        return self._softmax(self._design(features) @ self.w.T)[0]
+
+    def to_dict(self) -> dict:
+        return {"l2": self.l2, "mean": self.mean.tolist(), "w": self.w.tolist()}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "_SoftmaxClassifier":
+        clf = cls(l2=data.get("l2", 1e-2))
+        clf.mean = np.array(data["mean"])
+        clf.w = np.array(data["w"])
+        return clf
+
+
 class ScreenLockedMapper:
     """Two-stage gaze mapping: classify the target screen, then map within it.
 
-    Stage 1 ("which screen"): nearest-centroid over the scaled feature vector,
-    with hysteresis — the lock only moves after `lock_n` consecutive samples
-    prefer another screen, so glances and noise cannot flap the lock.
+    Stage 1 ("which screen"): a learned softmax classifier over the scaled
+    feature vector (nearest-centroid as fallback), with confidence-aware
+    hysteresis — the lock moves after `lock_n` consecutive confident samples
+    prefer another screen, or after FAST_N very confident ones (an obvious
+    head turn switches snappily; ambiguity near shared edges stays sticky).
     Stage 2 ("where on it"): a per-screen GazeMapper trained only on that
     screen's calibration samples — a narrow head-pose regime, so the local
     model is driven almost entirely by iris movement. Predictions are clamped
@@ -181,12 +253,16 @@ class ScreenLockedMapper:
     CLICK_BUFFER = 200  # rolling click samples kept per screen
     CLICK_WEIGHT = 3.0  # fresh ground truth counts more than old calibration
     REFIT_EVERY = 5  # refit a screen's mapper after this many new clicks
+    CONF_SWITCH = 0.6  # min average confidence for a lock_n challenge to win
+    CONF_FAST = 0.9  # confidence of an "obvious" switch
+    FAST_N = 3  # consecutive obvious frames that switch immediately
 
     def __init__(self, lock_n: int = 8):
         self.lock_n = lock_n
         self.rects: list[tuple[float, float, float, float]] = []
         self.centroids: list[np.ndarray] = []
         self.mappers: list[GazeMapper] = []
+        self.classifier: _SoftmaxClassifier | None = None
         # Training data is kept so click samples can be folded in later:
         # the calibration set anchors the model, clicks correct drift.
         self._cal_x: list[np.ndarray] = []
@@ -197,6 +273,8 @@ class ScreenLockedMapper:
         self._locked: int | None = None
         self._challenger: int | None = None
         self._challenger_count = 0
+        self._conf_sum = 0.0
+        self._fast_count = 0
 
     @property
     def is_fitted(self) -> bool:
@@ -238,7 +316,28 @@ class ScreenLockedMapper:
             self._cal_x.append(x)
             self._cal_y.append(y)
             stats[si] = {"rms": rms, "kept": int(keep.sum()), "dropped": int((~keep).sum())}
+        self._fit_classifier()
         return stats
+
+    def _fit_classifier(self) -> None:
+        """(Re)train the screen classifier on calibration + click samples."""
+        if len(self.rects) < 2:
+            self.classifier = None  # single screen: nothing to classify
+            return
+        xs, labels = [], []
+        for si in range(len(self.rects)):
+            group = [self._cal_x[si]]
+            if self._click_x[si]:
+                group.append(np.stack(self._click_x[si]))
+            x = np.concatenate(group)
+            xs.append(x)
+            labels.append(np.full(len(x), si))
+        try:
+            clf = _SoftmaxClassifier()
+            clf.fit(np.concatenate(xs), np.concatenate(labels), len(self.rects))
+            self.classifier = clf
+        except Exception:
+            self.classifier = None  # degenerate data: centroid fallback
 
     # -- continuous recalibration from clicks --------------------------------
 
@@ -278,32 +377,52 @@ class ScreenLockedMapper:
             [np.ones(len(self._cal_x[si])), np.full(len(self._click_x[si]), self.CLICK_WEIGHT)]
         )
         self.mappers[si].fit(x, y, sample_weight=w)
-        # Centroids stay calibration-defined: clicks must not drift the screen
-        # classifier, only the within-screen mapping.
+        # Clicks are screen-labeled ground truth, so they also keep the screen
+        # classifier tracking posture drift. Centroids stay calibration-defined
+        # (they are only the fallback).
+        self._fit_classifier()
+
+    def classify_proba(self, features: np.ndarray) -> np.ndarray:
+        """Per-screen probabilities (learned classifier, centroid fallback)."""
+        if self.classifier is not None and self.classifier.is_fitted:
+            return self.classifier.proba(features)
+        scaled = np.asarray(features, dtype=float) / _FIXED_SCALE
+        dists = np.array(
+            [np.linalg.norm(scaled - c / _FIXED_SCALE) for c in self.centroids]
+        )
+        return _SoftmaxClassifier._softmax(-dists[None, :])[0]
 
     def classify(self, features: np.ndarray) -> int:
-        scaled = np.asarray(features, dtype=float) / _FIXED_SCALE
-        dists = [np.linalg.norm(scaled - c / _FIXED_SCALE) for c in self.centroids]
-        return int(np.argmin(dists))
+        return int(np.argmax(self.classify_proba(features)))
 
     def predict(self, features: np.ndarray) -> np.ndarray:
         """Global screen point, clamped to the currently locked screen."""
         if not self.is_fitted:
             raise RuntimeError("ScreenLockedMapper is not fitted")
-        best = self.classify(features)
+        proba = self.classify_proba(features)
+        best = int(np.argmax(proba))
+        conf = float(proba[best])
 
         if self._locked is None:
             self._locked = best
         elif best != self._locked:
             if best == self._challenger:
                 self._challenger_count += 1
+                self._conf_sum += conf
+                self._fast_count = self._fast_count + 1 if conf >= self.CONF_FAST else 0
             else:
                 self._challenger, self._challenger_count = best, 1
-            if self._challenger_count >= self.lock_n:
+                self._conf_sum = conf
+                self._fast_count = 1 if conf >= self.CONF_FAST else 0
+            confident_challenge = (
+                self._challenger_count >= self.lock_n
+                and self._conf_sum / self._challenger_count >= self.CONF_SWITCH
+            )
+            if self._fast_count >= self.FAST_N or confident_challenge:
                 self._locked = best
-                self._challenger, self._challenger_count = None, 0
+                self._reset_challenge()
         else:
-            self._challenger, self._challenger_count = None, 0
+            self._reset_challenge()
 
         point = self.mappers[self._locked].predict(features)
         rx, ry, rw, rh = self.rects[self._locked]
@@ -311,10 +430,13 @@ class ScreenLockedMapper:
             [min(max(point[0], rx), rx + rw - 1), min(max(point[1], ry), ry + rh - 1)]
         )
 
+    def _reset_challenge(self) -> None:
+        self._challenger, self._challenger_count = None, 0
+        self._conf_sum, self._fast_count = 0.0, 0
+
     def reset_lock(self) -> None:
         self._locked = None
-        self._challenger = None
-        self._challenger_count = 0
+        self._reset_challenge()
 
     # -- persistence ---------------------------------------------------------
 
@@ -336,10 +458,11 @@ class ScreenLockedMapper:
         path.write_text(
             json.dumps(
                 {
-                    "version": 4,
+                    "version": 5,
                     "created": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "feature_names": FEATURE_NAMES,
                     "lock_n": self.lock_n,
+                    "classifier": self.classifier.to_dict() if self.classifier else None,
                     "screens": screens,
                 }
             )
@@ -350,9 +473,11 @@ class ScreenLockedMapper:
         if not path.exists():
             return None
         data = json.loads(path.read_text())
-        if data.get("version") != 4 or data.get("feature_names") != FEATURE_NAMES:
+        if data.get("version") != 5 or data.get("feature_names") != FEATURE_NAMES:
             return None
         mapper = cls(lock_n=data.get("lock_n", 8))
+        if data.get("classifier"):
+            mapper.classifier = _SoftmaxClassifier.from_dict(data["classifier"])
         for s in data["screens"]:
             mapper.rects.append(tuple(s["rect"]))
             mapper.centroids.append(np.array(s["centroid"]))

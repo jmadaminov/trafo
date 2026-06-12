@@ -86,10 +86,16 @@ class DebugView(QWidget):
                   theme.WARN if s.blinking else theme.TEXT_DIM)
 
         if self.c.mapper is not None:
-            self._set("Locked screen",
-                      str((self.c.mapper.locked_screen or 0) + 1)
-                      if self.c.mapper.locked_screen is not None else "—")
-            self._set("Clicks", str(self.c.mapper.click_count))
+            mapper = self.c.mapper
+            if mapper.locked_screen is not None and mapper.is_fitted:
+                proba = mapper.classify_proba(s.features)
+                conf = float(np.max(proba))
+                self._set("Locked screen",
+                          f"{mapper.locked_screen + 1} · {conf:.0%}",
+                          theme.GOOD if conf >= 0.8 else theme.WARN)
+            else:
+                self._set("Locked screen", "—")
+            self._set("Clicks", str(mapper.click_count))
         stab = self.c._stabilizer
         self._set("Stability", "fixating" if stab.is_fixating else "moving",
                   theme.GOOD if stab.is_fixating else theme.TEXT_DIM)

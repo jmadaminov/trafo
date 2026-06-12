@@ -26,6 +26,12 @@ RIGHT_IRIS_CENTER = 468  # 468-472: right iris (center first)
 LEFT_IRIS_CENTER = 473  # 473-477: left iris (center first)
 RIGHT_EYE_CORNERS = (33, 133)  # outer, inner
 LEFT_EYE_CORNERS = (263, 362)  # outer, inner
+# Face-oval extremes next to the ears (tragion area) + nose tip: the mesh has
+# no ear points, but these encode the same "which side of the head faces the
+# camera" signal, robust at large head yaw.
+RIGHT_FACE_OVAL = 234
+LEFT_FACE_OVAL = 454
+NOSE_TIP = 1
 
 
 def ensure_model() -> Path:
