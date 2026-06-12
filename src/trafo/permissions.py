@@ -116,6 +116,51 @@ def request(key: str) -> None:
         pass
 
 
+def ensure_camera_access(timeout: float = 120.0) -> bool:
+    """Make sure camera access is resolved before the capture device opens.
+
+    OpenCV runs with OPENCV_AVFOUNDATION_SKIP_AUTH=1 (its in-thread auth wait
+    can hang off the main loop), so the permission must be settled here first.
+    If the status is NotDetermined this shows the system prompt and blocks
+    until the user answers; safe to call before the Qt event loop starts since
+    the completion handler fires on a dispatch queue, not our runloop.
+
+    Returns True when capture is authorized, False when denied/restricted.
+    """
+    if sys.platform != "darwin":
+        return True
+    try:
+        from AVFoundation import (
+            AVAuthorizationStatusAuthorized,
+            AVAuthorizationStatusNotDetermined,
+            AVCaptureDevice,
+            AVMediaTypeVideo,
+        )
+    except Exception:
+        return True  # PyObjC unavailable — let OpenCV try its luck
+
+    status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeVideo)
+    if status == AVAuthorizationStatusAuthorized:
+        return True
+    if status != AVAuthorizationStatusNotDetermined:
+        return False
+
+    import threading
+
+    done = threading.Event()
+    granted: list[bool] = []
+
+    def _finished(ok: bool) -> None:
+        granted.append(bool(ok))
+        done.set()
+
+    AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+        AVMediaTypeVideo, _finished
+    )
+    done.wait(timeout)
+    return bool(granted and granted[0])
+
+
 def bundle_path() -> str | None:
     """Path to the .app bundle when running frozen on macOS, else None."""
     exe = sys.executable

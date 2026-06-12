@@ -8,7 +8,7 @@ import sys
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from .config import Settings
-from .permissions import bundle_path
+from .permissions import bundle_path, ensure_camera_access, open_settings_pane
 from .ui import theme
 from .ui.controller import TrafoController
 from .ui.main_window import MainWindow
@@ -55,6 +55,28 @@ def _maybe_move_to_applications() -> bool:
         return False  # no permission to write /Applications etc. — keep running
 
 
+def _ensure_camera_or_warn() -> None:
+    """Resolve the camera permission before the capture thread opens the device.
+
+    Onboarding handles the first-launch grant, but already-onboarded installs
+    (and dev runs from a terminal that was never prompted) reach the camera
+    with the permission still NotDetermined — and OpenCV is configured to not
+    ask. Prompt here; if denied, point at the settings pane.
+    """
+    if ensure_camera_access():
+        return
+    from PySide6.QtWidgets import QMessageBox
+
+    QMessageBox.warning(
+        None,
+        "Camera access needed",
+        "Trafo needs camera access to track your gaze.\n\n"
+        "Enable it under System Settings ▸ Privacy & Security ▸ Camera "
+        "for this app (or your terminal in dev mode), then restart Trafo.",
+    )
+    open_settings_pane("Privacy_Camera")
+
+
 def run_app(camera_index: int = 0, auto_calibrate: bool = False, overlay_on: bool = False) -> int:
     # The camera opens on a worker thread; macOS can only show the camera
     # permission prompt from the main loop. Skip the in-thread auth request so
@@ -91,6 +113,7 @@ def run_app(camera_index: int = 0, auto_calibrate: bool = False, overlay_on: boo
 
     settings = Settings.load()
     if auto_calibrate:
+        _ensure_camera_or_warn()
         controller.start()
         _show(window)
         win = controller.begin_calibration()
@@ -114,6 +137,7 @@ def run_app(camera_index: int = 0, auto_calibrate: bool = False, overlay_on: boo
         onboarding.show()
         app._onboarding = onboarding  # keep a reference alive
     else:
+        _ensure_camera_or_warn()
         controller.start()
         _show(window)
         if overlay_on and controller.is_calibrated:
